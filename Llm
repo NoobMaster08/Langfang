@@ -4,9 +4,14 @@ def ask_model(
     max_tokens: int
 ) -> str:
     """
-    Выполняет запрос к модели с повторными попытками
-    при временных ошибках API.
+    Выполняет запрос с включенным reasoning.
+
+    Если модель израсходовала лимит на рассуждение
+    и не сформировала итоговый ответ, запрос повторяется
+    с увеличенным лимитом.
     """
+
+    current_max_tokens = max_tokens
 
     for attempt in range(1, MAX_RETRIES + 1):
 
@@ -24,26 +29,74 @@ def ask_model(
                     }
                 ],
                 temperature=0.2,
-                max_tokens=max_tokens
+                max_tokens=current_max_tokens,
+
+                # Thinking остается включенным
+                extra_body={
+                    "chat_template_kwargs": {
+                        "enable_thinking": True
+                    }
+                }
             )
 
-            content = response.choices[0].message.content
+            choice = response.choices[0]
+            message = choice.message
 
-            if not content:
-                raise RuntimeError(
-                    "Модель вернула пустой ответ."
+            content = (
+                message.content.strip()
+                if message.content
+                else ""
+            )
+
+            message_data = message.model_dump()
+
+            reasoning = (
+                message_data.get("reasoning")
+                or message_data.get("reasoning_content")
+                or ""
+            )
+
+            print(
+                f"  finish_reason: {choice.finish_reason}; "
+                f"reasoning: {len(reasoning):,} символов; "
+                f"content: {len(content):,} символов"
+            )
+
+            if content:
+                return content
+
+            # Если content пустой, модель, вероятно,
+            # исчерпала лимит на reasoning
+            if attempt < MAX_RETRIES:
+                current_max_tokens = min(
+                    current_max_tokens + 2_000,
+                    12_000
                 )
 
-            return content
+                print(
+                    "\n  Итоговый ответ отсутствует."
+                    f"\n  Увеличиваем max_tokens "
+                    f"до {current_max_tokens}."
+                    f"\n  Повторная попытка "
+                    f"{attempt + 1}/{MAX_RETRIES}..."
+                )
 
-        except RateLimitError as error:
+                time.sleep(5)
+                continue
+
+            raise RuntimeError(
+                "Модель завершила рассуждение, "
+                "но не вернула итоговый ответ."
+            )
+
+        except RateLimitError:
             if attempt >= MAX_RETRIES:
                 raise
 
             print(
-                f"\nДостигнут лимит API."
-                f"\nПопытка {attempt}/{MAX_RETRIES}."
-                f"\nПовтор через {RATE_LIMIT_WAIT_SECONDS} секунд."
+                f"\n  Достигнут лимит API."
+                f"\n  Ожидание "
+                f"{RATE_LIMIT_WAIT_SECONDS} секунд."
             )
 
             time.sleep(RATE_LIMIT_WAIT_SECONDS)
@@ -55,21 +108,24 @@ def ask_model(
             wait_seconds = min(10 * attempt, 60)
 
             print(
-                f"\nОшибка подключения или тайм-аут:"
-                f"\n{type(error).__name__}: {error}"
-                f"\nПовтор через {wait_seconds} секунд."
+                f"\n  Ошибка подключения: "
+                f"{type(error).__name__}: {error}"
+                f"\n  Повтор через {wait_seconds} секунд."
             )
 
             time.sleep(wait_seconds)
 
         except APIStatusError as error:
-            if error.status_code >= 500 and attempt < MAX_RETRIES:
+            if (
+                error.status_code >= 500
+                and attempt < MAX_RETRIES
+            ):
                 wait_seconds = min(10 * attempt, 60)
 
                 print(
-                    f"\nВременная ошибка AI Gateway: "
+                    f"\n  Временная ошибка Gateway: "
                     f"HTTP {error.status_code}."
-                    f"\nПовтор через {wait_seconds} секунд."
+                    f"\n  Повтор через {wait_seconds} секунд."
                 )
 
                 time.sleep(wait_seconds)
@@ -80,6 +136,7 @@ def ask_model(
     raise RuntimeError(
         "Не удалось получить ответ модели."
     )
+
 # -*- coding: utf-8 -*def ask_model(
     system_prompt: str,
     user_prompt: str,
