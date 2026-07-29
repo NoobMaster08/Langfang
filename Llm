@@ -1,4 +1,167 @@
-# -*- coding: utf-8 -*-
+def ask_model(
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int
+) -> str:
+    """
+    Выполняет запрос к модели с повторными попытками
+    при временных ошибках API.
+    """
+
+    for attempt in range(1, MAX_RETRIES + 1):
+
+        try:
+            response = llm_client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt
+                    }
+                ],
+                temperature=0.2,
+                max_tokens=max_tokens
+            )
+
+            content = response.choices[0].message.content
+
+            if not content:
+                raise RuntimeError(
+                    "Модель вернула пустой ответ."
+                )
+
+            return content
+
+        except RateLimitError as error:
+            if attempt >= MAX_RETRIES:
+                raise
+
+            print(
+                f"\nДостигнут лимит API."
+                f"\nПопытка {attempt}/{MAX_RETRIES}."
+                f"\nПовтор через {RATE_LIMIT_WAIT_SECONDS} секунд."
+            )
+
+            time.sleep(RATE_LIMIT_WAIT_SECONDS)
+
+        except (APIConnectionError, APITimeoutError) as error:
+            if attempt >= MAX_RETRIES:
+                raise
+
+            wait_seconds = min(10 * attempt, 60)
+
+            print(
+                f"\nОшибка подключения или тайм-аут:"
+                f"\n{type(error).__name__}: {error}"
+                f"\nПовтор через {wait_seconds} секунд."
+            )
+
+            time.sleep(wait_seconds)
+
+        except APIStatusError as error:
+            if error.status_code >= 500 and attempt < MAX_RETRIES:
+                wait_seconds = min(10 * attempt, 60)
+
+                print(
+                    f"\nВременная ошибка AI Gateway: "
+                    f"HTTP {error.status_code}."
+                    f"\nПовтор через {wait_seconds} секунд."
+                )
+
+                time.sleep(wait_seconds)
+                continue
+
+            raise
+
+    raise RuntimeError(
+        "Не удалось получить ответ модели."
+    )
+# -*- coding: utf-8 -*def ask_model(
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int
+) -> str:
+    """
+    Выполняет запрос к модели с повторными попытками
+    при временных ошибках API.
+    """
+
+    for attempt in range(1, MAX_RETRIES + 1):
+
+        try:
+            response = llm_client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt
+                    }
+                ],
+                temperature=0.2,
+                max_tokens=max_tokens
+            )
+
+            content = response.choices[0].message.content
+
+            if not content:
+                raise RuntimeError(
+                    "Модель вернула пустой ответ."
+                )
+
+            return content
+
+        except RateLimitError as error:
+            if attempt >= MAX_RETRIES:
+                raise
+
+            print(
+                f"\nДостигнут лимит API."
+                f"\nПопытка {attempt}/{MAX_RETRIES}."
+                f"\nПовтор через {RATE_LIMIT_WAIT_SECONDS} секунд."
+            )
+
+            time.sleep(RATE_LIMIT_WAIT_SECONDS)
+
+        except (APIConnectionError, APITimeoutError) as error:
+            if attempt >= MAX_RETRIES:
+                raise
+
+            wait_seconds = min(10 * attempt, 60)
+
+            print(
+                f"\nОшибка подключения или тайм-аут:"
+                f"\n{type(error).__name__}: {error}"
+                f"\nПовтор через {wait_seconds} секунд."
+            )
+
+            time.sleep(wait_seconds)
+
+        except APIStatusError as error:
+            if error.status_code >= 500 and attempt < MAX_RETRIES:
+                wait_seconds = min(10 * attempt, 60)
+
+                print(
+                    f"\nВременная ошибка AI Gateway: "
+                    f"HTTP {error.status_code}."
+                    f"\nПовтор через {wait_seconds} секунд."
+                )
+
+                time.sleep(wait_seconds)
+                continue
+
+            raise
+
+    raise RuntimeError(
+        "Не удалось получить ответ модели."
+    )
 
 from __future__ import annotations
 
