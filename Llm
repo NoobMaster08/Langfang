@@ -1,8 +1,112 @@
-def ask_model(
-    system_prompt: str,
-    user_prompt: str,
-    max_tokens: int
-) -> str:
+import base64
+import fitz  # PyMuPDF
+
+INPUT_FOLDER = Path("./input")
+OUTPUT_FOLDER = Path("./output")
+OUTPUT_FOLDER.mkdir(exist_ok=True)
+
+MODEL_NAME = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
+
+PROMPT = """
+ВСТАВЬ СЮДА СВОЙ ПРОМПТ.
+
+Проанализируй весь документ.
+Верни только итоговый результат.
+Не описывай ход рассуждений.
+"""
+
+
+# Находим единственный PDF
+pdf_files = list(INPUT_FOLDER.glob("*.pdf"))
+
+if len(pdf_files) != 1:
+    raise RuntimeError(
+        f"В папке input должен быть ровно один PDF. "
+        f"Найдено: {len(pdf_files)}"
+    )
+
+pdf_path = pdf_files[0]
+pdf = fitz.open(pdf_path)
+
+content = [
+    {
+        "type": "text",
+        "text": PROMPT,
+    }
+]
+
+
+# Каждую страницу PDF преобразуем в изображение
+for page_number, page in enumerate(pdf, start=1):
+
+    pixmap = page.get_pixmap(
+        matrix=fitz.Matrix(1.5, 1.5),
+        alpha=False,
+    )
+
+    image_bytes = pixmap.tobytes("jpeg")
+
+    image_base64 = base64.b64encode(
+        image_bytes
+    ).decode("utf-8")
+
+    content.append({
+        "type": "text",
+        "text": f"Страница {page_number}",
+    })
+
+    content.append({
+        "type": "image_url",
+        "image_url": {
+            "url": (
+                "data:image/jpeg;base64,"
+                + image_base64
+            )
+        },
+    })
+
+
+pdf.close()
+
+
+# Один запрос по всему PDF
+response = llm_client.chat.completions.create(
+    model=MODEL_NAME,
+    messages=[
+        {
+            "role": "user",
+            "content": content,
+        }
+    ],
+    temperature=0.2,
+    max_tokens=8000,
+    extra_body={
+        "chat_template_kwargs": {
+            "enable_thinking": True,
+        }
+    },
+)
+
+
+result = response.choices[0].message.content
+
+if not result:
+    raise RuntimeError(
+        "Модель выполнила reasoning, "
+        "но не вернула итоговый ответ."
+    )
+
+
+# Сохранение результата
+output_path = OUTPUT_FOLDER / "result.txt"
+
+output_path.write_text(
+    
+    encoding="utf-8",
+)
+
+print(result)
+print(f"\nРезультат сохранен: {output_path.resolve()}")
     """
     Выполняет запрос с включенным reasoning.
 
