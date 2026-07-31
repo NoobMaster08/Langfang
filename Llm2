@@ -1,7 +1,7 @@
 from pathlib import Path
 import json
 
-import pandas as pd
+from openpyxl import load_workbook
 
 
 MAPPING_FOLDER = Path("./mapping")
@@ -11,188 +11,125 @@ OUTPUT_FOLDER.mkdir(exist_ok=True)
 
 MODEL_NAME = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
 
-# Названия столбцов в маппинг-файле
-MAPPING_RU_COLUMN = "Название поля на русском"
-MAPPING_EN_COLUMN = "Название поля на английском"
 
+def read_excel_cells(path: Path) -> list[dict]:
+    """Извлекает все заполненные ячейки со всех листов Excel."""
 
-def normalize_value(value):
-    """Приводит значения Excel к формату, пригодному для JSON."""
+    workbook = load_workbook(
+        path,
+        data_only=True,
+        read_only=False,
+    )
 
-    if pd.isna(value):
-        return None
+    result = []
 
-    if isinstance(value, pd.Timestamp):
-        return value.strftime("%Y-%m-%d")
+    for sheet in workbook.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                if cell.value is None:
+                    continue
 
-    return value
+                value = str(cell.value).strip()
 
+                if not value:
+                    continue
 
-def flatten_json(data, prefix=""):
-    """
-    Преобразует вложенный JSON в плоский словарь.
+                result.append({
+                    "sheet": sheet.title,
+                    "cell": cell.coordinate,
+                    "value": value,
+                })
 
-    Пример:
-    {"client": {"name": "Иван"}}
-    превращается в:
-    {"client.name": "Иван"}
-    """
-
-    result = {}
-
-    if isinstance(data, dict):
-        for key, value in data.items():
-            new_key = f"{prefix}.{key}" if prefix else key
-            result.update(flatten_json(value, new_key))
-
-    elif isinstance(data, list):
-        for index, value in enumerate(data):
-            new_key = f"{prefix}[{index}]"
-            result.update(flatten_json(value, new_key))
-
-    else:
-        result[prefix] = data
-
+    workbook.close()
     return result
 
 
-# -------------------------------
-# 1. Загружаем маппинг
-# -------------------------------
-
+# Находим маппинг-файл
 mapping_files = list(MAPPING_FOLDER.glob("*.xlsx"))
 
 if len(mapping_files) != 1:
     raise RuntimeError(
-        f"В папке mapping должен находиться один Excel-файл. "
+        f"В папке mapping должен быть один XLSX. "
         f"Найдено: {len(mapping_files)}"
     )
 
-mapping_df = pd.read_excel(mapping_files[0])
-
-required_columns = {
-    MAPPING_RU_COLUMN,
-    MAPPING_EN_COLUMN,
-}
-
-missing_columns = required_columns - set(mapping_df.columns)
-
-if missing_columns:
-    raise RuntimeError(
-        f"В маппинг-файле отсутствуют столбцы: {missing_columns}"
-    )
-
-mapping = dict(
-    zip(
-        mapping_df[MAPPING_RU_COLUMN].astype(str).str.strip(),
-        mapping_df[MAPPING_EN_COLUMN].astype(str).str.strip(),
-    )
-)
+mapping_cells = read_excel_cells(mapping_files[0])
 
 
-# -------------------------------
-# 2. Ищем пары XLSX + JSON
-# -------------------------------
-
-excel_files = list(INPUT_FOLDER.glob("*.xlsx"))
-
-if not excel_files:
-    raise RuntimeError("В папке input не найдено Excel-файлов")
-
-
-for excel_path in excel_files:
+# Ищем одноимённые пары XLSX + JSON
+for excel_path in INPUT_FOLDER.glob("*.xlsx"):
 
     json_path = excel_path.with_suffix(".json")
 
     if not json_path.exists():
-        print(f"[SKIP] Для {excel_path.name} не найден JSON")
+        print(f"[SKIP] Не найден JSON для {excel_path.name}")
         continue
 
-    print(f"[INFO] Проверка: {excel_path.name} ↔ {json_path.name}")
+    excel_cells = read_excel_cells(excel_path)
 
-    # Предполагается, что в Excel одна строка с данными
-    data_df = pd.read_excel(excel_path)
-
-    if data_df.empty:
-        print(f"[SKIP] Excel-файл {excel_path.name} пустой")
-        continue
-
-    if len(data_df) > 1:
-        raise RuntimeError(
-            f"В файле {excel_path.name} найдено строк: {len(data_df)}. "
-            f"Ожидалась одна строка."
-        )
-
-    excel_row = data_df.iloc[0].to_dict()
-
-    # Переводим русские названия Excel в английские
-    expected_data = {}
-
-    unmapped_fields = []
-
-    for russian_field, value in excel_row.items():
-
-        russian_field = str(russian_field).strip()
-
-        english_field = mapping.get(russian_field)
-
-        if not english_field:
-            unmapped_fields.append(russian_field)
-            continue
-
-        expected_data[english_field] = normalize_value(value)
-
-    # Читаем JSON
     with open(json_path, "r", encoding="utf-8-sig") as file:
         json_data = json.load(file)
 
-    actual_data = flatten_json(json_data)
-
-
-    # -------------------------------
-    # 3. Формируем запрос к модели
-    # -------------------------------
-
     prompt = f"""
-Сравни эталонные данные из Excel с данными, извлеченными в JSON.
+Необходимо проверить корректность JSON по отношению к исходному Excel-файлу.
 
-Названия полей Excel уже переведены на английский язык по маппинг-файлу.
+Маппинг представлен Excel-шаблоном, а не обычной таблицей.
+Русское название поля и соответствующее английское название могут:
 
-ЭТАЛОННЫЕ ДАННЫЕ ИЗ EXCEL:
-{json.dumps(expected_data, ensure_ascii=False, indent=2, default=str)}
+- находиться в соседних ячейках;
+- находиться в одной ячейке;
+- быть разделены символами "-", "—", пробелом или переносом строки;
+- находиться в разных частях одной строки формы.
 
-ФАКТИЧЕСКИЕ ДАННЫЕ ИЗ JSON:
-{json.dumps(actual_data, ensure_ascii=False, indent=2, default=str)}
+Сначала самостоятельно определи соответствия:
 
-ПОЛЯ EXCEL, ДЛЯ КОТОРЫХ НЕ НАЙДЕН МАППИНГ:
-{json.dumps(unmapped_fields, ensure_ascii=False, indent=2)}
+русское название поля → английское название поля JSON.
 
-Проверь:
+Не считай значениями названия разделов, заголовки формы, пояснения,
+служебные надписи и примеры заполнения.
 
-1. Какие поля отсутствуют в JSON.
-2. Какие поля присутствуют, но содержат неправильные значения.
-3. Какие лишние поля присутствуют в JSON.
-4. Какие поля невозможно сравнить из-за отсутствия маппинга.
-5. Учитывай допустимые различия форматов:
-   - пробелы в начале и конце;
-   - числа 100 и 100.0;
-   - даты в эквивалентных форматах;
-   - null, пустую строку и отсутствующее значение различай.
-6. Не придумывай значения, которых нет в исходных данных.
+ЯЧЕЙКИ МАППИНГ-ФАЙЛА:
+{json.dumps(mapping_cells, ensure_ascii=False, indent=2)}
+
+ЯЧЕЙКИ EXCEL С ЭТАЛОННЫМИ ДАННЫМИ:
+{json.dumps(excel_cells, ensure_ascii=False, indent=2)}
+
+ПРОВЕРЯЕМЫЙ JSON:
+{json.dumps(json_data, ensure_ascii=False, indent=2)}
+
+Порядок проверки:
+
+1. Построй маппинг русских и английских названий полей.
+2. Найди значения соответствующих полей в Excel с данными.
+3. Сравни их со значениями одноимённых английских полей JSON.
+4. Покажи только ошибки и расхождения.
 
 Для каждого расхождения укажи:
 
-- название поля на английском;
-- название поля на русском, если оно есть в маппинге;
-- ожидаемое значение из Excel;
-- фактическое значение из JSON;
+- русское название поля;
+- английское название поля;
+- значение в Excel;
+- значение в JSON;
 - тип ошибки;
 - краткое пояснение.
 
-Если расхождений нет, напиши:
-«Данные Excel и JSON совпадают».
+Типы ошибок:
 
-Верни только результат проверки, без описания процесса анализа.
+- поле отсутствует в JSON;
+- неверное значение;
+- лишнее поле в JSON;
+- поле присутствует, но пустое;
+- не найдено соответствие в маппинге;
+- значение невозможно однозначно определить.
+
+Учитывай эквивалентность чисел 100 и 100.0, а также дат,
+записанных в разных стандартных форматах.
+
+Не придумывай отсутствующие значения.
+Если все данные совпадают, напиши:
+«Расхождения между Excel и JSON не обнаружены».
+
+Верни только результат проверки.
 """
 
     response = llm_client.chat.completions.create(
@@ -204,7 +141,7 @@ for excel_path in excel_files:
             }
         ],
         temperature=0,
-        max_tokens=5000,
+        max_tokens=6000,
         extra_body={
             "chat_template_kwargs": {
                 "enable_thinking": True,
@@ -216,15 +153,19 @@ for excel_path in excel_files:
 
     if not result:
         raise RuntimeError(
-            f"Модель не вернула результат для {excel_path.name}"
+            f"Модель не вернула ответ для {excel_path.name}"
         )
 
-    output_path = OUTPUT_FOLDER / f"{excel_path.stem}_comparison.txt"
+    output_path = (
+        OUTPUT_FOLDER
+        / f"{excel_path.stem}_comparison.txt"
+    )
 
     output_path.write_text(
         result,
         encoding="utf-8",
     )
 
+    print(f"\nПроверка: {excel_path.name}")
     print(result)
-    print(f"[OK] Результат сохранен: {output_path}")
+    print(f"\nСохранено: {output_path}")
