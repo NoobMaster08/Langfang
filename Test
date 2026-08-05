@@ -1,25 +1,39 @@
-MODEL_NAME = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
+import httpx
 
-llm_client = OpenAI(
-    base_url="https://raisa.go.rshbank.ru/ai/models/moe-llm/v1",
-    api_key="ТВОЙ_КЛЮЧ",
-    http_client=httpx.Client(verify=False)
-)
+BASE_URL = "https://raisa.go.rshbank.ru/ai/models/moe-llm/v1"
+API_KEY = "123"
 
-response = llm_client.chat.completions.create(
-    model=MODEL_NAME,
-    messages=[
-        {
-            "role": "user",
-            "content": "Ответь одним словом: работает"
-        }
-    ],
-    max_tokens=500,
-    extra_body={
-        "chat_template_kwargs": {
-            "enable_thinking": True
-        }
-    }
-)
+headers = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json",
+}
 
-print(response.choices[0].message.content)
+with httpx.Client(verify=False, timeout=60) as client:
+
+    models_response = client.get(
+        f"{BASE_URL}/models",
+        headers=headers,
+    )
+
+    print("MODELS:")
+    print(models_response.status_code)
+    print(models_response.text)
+
+    chat_response = client.post(
+        f"{BASE_URL}/chat/completions",
+        headers=headers,
+        json={
+            "model": "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Ответь одним словом: работает",
+                }
+            ],
+            "max_tokens": 500,
+        },
+    )
+
+    print("\nCHAT:")
+    print(chat_response.status_code)
+    print(chat_response.text)
