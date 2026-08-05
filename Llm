@@ -1,334 +1,10 @@
-import base64
-import fitz  # PyMuPDF
-
-INPUT_FOLDER = Path("./input")
-OUTPUT_FOLDER = Path("./output")
-OUTPUT_FOLDER.mkdir(exist_ok=True)
-
-MODEL_NAME = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
-
-PROMPT = """
-ВСТАВЬ СЮДА СВОЙ ПРОМПТ.
-
-Проанализируй весь документ.
-Верни только итоговый результат.
-Не описывай ход рассуждений.
-"""
-
-
-# Находим единственный PDF
-pdf_files = list(INPUT_FOLDER.glob("*.pdf"))
-
-if len(pdf_files) != 1:
-    raise RuntimeError(
-        f"В папке input должен быть ровно один PDF. "
-        f"Найдено: {len(pdf_files)}"
-    )
-
-pdf_path = pdf_files[0]
-pdf = fitz.open(pdf_path)
-
-content = [
-    {
-        "type": "text",
-        "text": PROMPT,
-    }
-]
-
-
-# Каждую страницу PDF преобразуем в изображение
-for page_number, page in enumerate(pdf, start=1):
-
-    pixmap = page.get_pixmap(
-        matrix=fitz.Matrix(1.5, 1.5),
-        alpha=False,
-    )
-
-    image_bytes = pixmap.tobytes("jpeg")
-
-    image_base64 = base64.b64encode(
-        image_bytes
-    ).decode("utf-8")
-
-    content.append({
-        "type": "text",
-        "text": f"Страница {page_number}",
-    })
-
-    content.append({
-        "type": "image_url",
-        "image_url": {
-            "url": (
-                "data:image/jpeg;base64,"
-                + image_base64
-            )
-        },
-    })
-
-
-pdf.close()
-
-
-# Один запрос по всему PDF
-response = llm_client.chat.completions.create(
-    model=MODEL_NAME,
-    messages=[
-        {
-            "role": "user",
-            "content": content,
-        }
-    ],
-    temperature=0.2,
-    max_tokens=8000,
-    extra_body={
-        "chat_template_kwargs": {
-            "enable_thinking": True,
-        }
-    },
-)
-
-
-result = response.choices[0].message.content
-
-if not result:
-    raise RuntimeError(
-        "Модель выполнила reasoning, "
-        "но не вернула итоговый ответ."
-    )
-
-
-# Сохранение результата
-output_path = OUTPUT_FOLDER / "result.txt"
-
-output_path.write_text(
-    
-    encoding="utf-8",
-)
-
-print(result)
-print(f"\nРезультат сохранен: {output_path.resolve()}")
-    """
-    Выполняет запрос с включенным reasoning.
-
-    Если модель израсходовала лимит на рассуждение
-    и не сформировала итоговый ответ, запрос повторяется
-    с увеличенным лимитом.
-    """
-
-    current_max_tokens = max_tokens
-
-    for attempt in range(1, MAX_RETRIES + 1):
-
-        try:
-            response = llm_client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": system_prompt
-                    },
-                    {
-                        "role": "user",
-                        "content": user_prompt
-                    }
-                ],
-                temperature=0.2,
-                max_tokens=current_max_tokens,
-
-                # Thinking остается включенным
-                extra_body={
-                    "chat_template_kwargs": {
-                        "enable_thinking": True
-                    }
-                }
-            )
-
-            choice = response.choices[0]
-            message = choice.message
-
-            content = (
-                message.content.strip()
-                if message.content
-                else ""
-            )
-
-            message_data = message.model_dump()
-
-            reasoning = (
-                message_data.get("reasoning")
-                or message_data.get("reasoning_content")
-                or ""
-            )
-
-            print(
-                f"  finish_reason: {choice.finish_reason}; "
-                f"reasoning: {len(reasoning):,} символов; "
-                f"content: {len(content):,} символов"
-            )
-
-            if content:
-                return content
-
-            # Если content пустой, модель, вероятно,
-            # исчерпала лимит на reasoning
-            if attempt < MAX_RETRIES:
-                current_max_tokens = min(
-                    current_max_tokens + 2_000,
-                    12_000
-                )
-
-                print(
-                    "\n  Итоговый ответ отсутствует."
-                    f"\n  Увеличиваем max_tokens "
-                    f"до {current_max_tokens}."
-                    f"\n  Повторная попытка "
-                    f"{attempt + 1}/{MAX_RETRIES}..."
-                )
-
-                time.sleep(5)
-                continue
-
-            raise RuntimeError(
-                "Модель завершила рассуждение, "
-                "но не вернула итоговый ответ."
-            )
-
-        except RateLimitError:
-            if attempt >= MAX_RETRIES:
-                raise
-
-            print(
-                f"\n  Достигнут лимит API."
-                f"\n  Ожидание "
-                f"{RATE_LIMIT_WAIT_SECONDS} секунд."
-            )
-
-            time.sleep(RATE_LIMIT_WAIT_SECONDS)
-
-        except (APIConnectionError, APITimeoutError) as error:
-            if attempt >= MAX_RETRIES:
-                raise
-
-            wait_seconds = min(10 * attempt, 60)
-
-            print(
-                f"\n  Ошибка подключения: "
-                f"{type(error).__name__}: {error}"
-                f"\n  Повтор через {wait_seconds} секунд."
-            )
-
-            time.sleep(wait_seconds)
-
-        except APIStatusError as error:
-            if (
-                error.status_code >= 500
-                and attempt < MAX_RETRIES
-            ):
-                wait_seconds = min(10 * attempt, 60)
-
-                print(
-                    f"\n  Временная ошибка Gateway: "
-                    f"HTTP {error.status_code}."
-                    f"\n  Повтор через {wait_seconds} секунд."
-                )
-
-                time.sleep(wait_seconds)
-                continue
-
-            raise
-
-    raise RuntimeError(
-        "Не удалось получить ответ модели."
-    )
-
-# -*- coding: utf-8 -*def ask_model(
-    system_prompt: str,
-    user_prompt: str,
-    max_tokens: int
-) -> str:
-    """
-    Выполняет запрос к модели с повторными попытками
-    при временных ошибках API.
-    """
-
-    for attempt in range(1, MAX_RETRIES + 1):
-
-        try:
-            response = llm_client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": system_prompt
-                    },
-                    {
-                        "role": "user",
-                        "content": user_prompt
-                    }
-                ],
-                temperature=0.2,
-                max_tokens=max_tokens
-            )
-
-            content = response.choices[0].message.content
-
-            if not content:
-                raise RuntimeError(
-                    "Модель вернула пустой ответ."
-                )
-
-            return content
-
-        except RateLimitError as error:
-            if attempt >= MAX_RETRIES:
-                raise
-
-            print(
-                f"\nДостигнут лимит API."
-                f"\nПопытка {attempt}/{MAX_RETRIES}."
-                f"\nПовтор через {RATE_LIMIT_WAIT_SECONDS} секунд."
-            )
-
-            time.sleep(RATE_LIMIT_WAIT_SECONDS)
-
-        except (APIConnectionError, APITimeoutError) as error:
-            if attempt >= MAX_RETRIES:
-                raise
-
-            wait_seconds = min(10 * attempt, 60)
-
-            print(
-                f"\nОшибка подключения или тайм-аут:"
-                f"\n{type(error).__name__}: {error}"
-                f"\nПовтор через {wait_seconds} секунд."
-            )
-
-            time.sleep(wait_seconds)
-
-        except APIStatusError as error:
-            if error.status_code >= 500 and attempt < MAX_RETRIES:
-                wait_seconds = min(10 * attempt, 60)
-
-                print(
-                    f"\nВременная ошибка AI Gateway: "
-                    f"HTTP {error.status_code}."
-                    f"\nПовтор через {wait_seconds} секунд."
-                )
-
-                time.sleep(wait_seconds)
-                continue
-
-            raise
-
-    raise RuntimeError(
-        "Не удалось получить ответ модели."
-    )
-
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 from pathlib import Path
 from datetime import date, datetime
 from typing import Any
+
 import json
 import math
 import time
@@ -337,123 +13,162 @@ import numpy as np
 import pandas as pd
 import httpx
 
-from openai import OpenAI
+from openai import (
+    OpenAI,
+    RateLimitError,
+    APIStatusError,
+    APIConnectionError,
+    APITimeoutError,
+)
+
 from IPython.display import display, Markdown
 
 
 # ============================================================
-# 1. НАСТРОЙКИ
+# КОНФИГУРАЦИЯ
 # ============================================================
 
 INPUT_FOLDER = Path("./input")
 OUTPUT_FOLDER = Path("./output")
 
-OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+OUTPUT_FOLDER.mkdir(
+    parents=True,
+    exist_ok=True,
+)
 
-MODEL_NAME = "Qwen/Qwen3-Coder-30B-A3B-Instruct/codegen"
+MODEL_NAME = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
+TEMPERATURE = 0.2
 
-# Максимальный размер одного блока данных.
-# 90 000 символов — достаточно безопасное значение
-# для модели с контекстом около 65 000 токенов.
-MAX_DATA_CHARS = 90_000
+PROCESS_ANALYSIS_PROMPT = """
+Ты — эксперт по анализу бизнес-процессов и Process Mining
+с практическим опытом оптимизации процессов в крупных организациях.
 
-# Максимальный размер блока промежуточных выводов
-# при консолидации.
-MAX_CONSOLIDATION_CHARS = 80_000
+Ниже представлены агрегированные метрики одного бизнес-процесса,
+распределенные по нескольким Excel-файлам.
 
-# Максимальное количество токенов в ответах.
-ANALYSIS_MAX_TOKENS = 4_000
+Название процесса:
+Открытие и закрытие вкладов для клиентов — физических лиц.
+
+Цель анализа:
+выявить узкие места, отклонения от стандартных сценариев,
+участки для оптимизации и потенциальные причины проблем.
+
+Бизнес-контекст:
+процесс в большинстве случаев выполняется достаточно быстро,
+однако в отдельных ситуациях присутствуют отклонения,
+возвраты, нестандартные сценарии и длительные ожидания.
+
+Период анализа:
+1 год.
+
+Проведи единый комплексный анализ всего процесса.
+
+Методология:
+
+A. Анализ структуры процесса:
+- основные и нетипичные сценарии;
+- переходы между этапами;
+- циклы и возвраты;
+- отклонения от стандартного маршрута.
+
+B. Анализ времени:
+- наиболее длительные этапы и переходы;
+- аномальные сроки;
+- различия между типичными и нетипичными сценариями.
+
+C. Анализ отклонений:
+- возвраты;
+- повторные прохождения этапов;
+- нестандартные завершения;
+- редкие, но потенциально критичные сценарии.
+
+D. Анализ эффективности:
+- участки с наибольшим потенциалом оптимизации;
+- необоснованные действия и ожидания;
+- возможные точки автоматизации.
+
+E. Корневые причины:
+- сформулируй обоснованные гипотезы;
+- не представляй гипотезы как подтвержденные факты;
+- укажи, какие дополнительные данные нужны для проверки.
+
+Принципы:
+
+- анализируй взаимосвязи между всеми файлами;
+- не формируй отдельные независимые отчеты по файлам;
+- не пересказывай входные данные;
+- каждый вывод подтверждай конкретными метриками;
+- сохраняй значимые числовые показатели;
+- не придумывай отсутствующие факты;
+- отделяй подтвержденные выводы от гипотез;
+- устраняй дублирующиеся наблюдения;
+- отвечай на русском языке.
+
+Формат итогового ответа:
+
+## Управленческий вывод
+
+Краткое описание общего состояния процесса, основных проблем
+и наиболее значимого потенциала оптимизации.
+
+## Ключевые инсайты
+
+| № | Инсайт | Подтверждение данными | Возможная причина | Последствия | Приоритет |
+|---|---|---|---|---|---|
+
+## Рекомендации
+
+| № | Рекомендация | Связанный инсайт | Ожидаемый эффект | Приоритет |
+|---|---|---|---|---|
+
+## Топ-5 наиболее значимых выводов
+
+## Ограничения анализа и необходимые дополнительные данные
+"""
+
+MAX_DATA_CHARS = 20_000
+MAX_CONSOLIDATION_CHARS = 35_000
+
+ANALYSIS_MAX_TOKENS = 4_500
 CONSOLIDATION_MAX_TOKENS = 5_000
-FINAL_MAX_TOKENS = 6_000
+FINAL_MAX_TOKENS = 7_000
 
-# Небольшая пауза между запросами к шлюзу.
-REQUEST_DELAY_SECONDS = 0.5
+MAX_RETRIES = 10
+REQUEST_DELAY_SECONDS = 20
+RATE_LIMIT_WAIT_SECONDS = 65
+
+SHOW_PROGRESS = False
 
 
 # ============================================================
-# 2. ПОДКЛЮЧЕНИЕ К AI GATEWAY
+# ПОДКЛЮЧЕНИЕ К AI GATEWAY
 # ============================================================
 
 llm_client = OpenAI(
-    base_url="https://ai-gateway.raisa.go.rshbank.ru/v1",
-    api_key="",  # Вставь свой API-ключ
+    base_url="https://ai-gateway.raisa.go.rshbank.ru/ai/models/moe-llm/v1",
+    api_key="123",  # укажи актуальный ключ
     http_client=httpx.Client(
         verify=False,
         timeout=httpx.Timeout(
             connect=60.0,
             read=600.0,
             write=600.0,
-            pool=60.0
-        )
-    )
+            pool=60.0,
+        ),
+    ),
 )
 
 
 # ============================================================
-# 3. ОСНОВНОЙ ПРОМПТ
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================
 
-LETTER_DETECTION_PROMPT = """
-Ты — эксперт по анализу бизнес-процессов и Process Mining
-с практическим опытом оптимизации процессов.
+def log(message: str) -> None:
+    if SHOW_PROGRESS:
+        print(message)
 
-Тебе передаются агрегированные метрики процесса из Excel-файла.
-
-Проведи содержательный анализ данных.
-
-Методология анализа:
-
-1. Выяви ключевые закономерности и отклонения.
-2. Найди узкие места, задержки, циклы, возвраты и аномалии.
-3. Сопоставь показатели между строками и категориями.
-4. Определи возможные причины выявленных проблем.
-5. Оцени потенциальные последствия для процесса.
-6. Предложи практически применимые рекомендации.
-
-Принципы:
-
-- не пересказывай таблицу построчно;
-- интерпретируй метрики и взаимосвязи;
-- не придумывай отсутствующие значения;
-- каждый вывод подтверждай конкретными данными;
-- сохраняй важные числовые показатели;
-- не делай окончательный вывод по всему файлу,
-  если передана только одна его часть;
-- если данных недостаточно, прямо укажи это;
-- отвечай на русском языке.
-
-Представь результат в Markdown.
-
-Структура ответа:
-
-## Ключевые наблюдения
-
-| № | Инсайт | Обоснование данными | Возможная причина |
-|---|---|---|---|
-
-## Риски и последствия
-
-| № | Риск или последствие | Связанный инсайт | Критичность |
-|---|---|---|---|
-
-## Рекомендации
-
-| № | Рекомендация | Ожидаемый эффект | Приоритет |
-|---|---|---|---|
-
-## Предварительный вывод
-"""
-
-
-# ============================================================
-# 4. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# ============================================================
 
 def normalize_value(value: Any) -> Any:
-    """
-    Преобразует значения pandas/numpy в JSON-совместимый вид.
-    """
-
     if value is None:
         return None
 
@@ -470,12 +185,12 @@ def normalize_value(value: Any) -> Any:
         return int(value)
 
     if isinstance(value, np.floating):
-        value = float(value)
+        normalized = float(value)
 
-        if math.isnan(value) or math.isinf(value):
+        if math.isnan(normalized) or math.isinf(normalized):
             return None
 
-        return value
+        return normalized
 
     if isinstance(value, np.bool_):
         return bool(value)
@@ -487,45 +202,36 @@ def normalize_value(value: Any) -> Any:
 
 
 def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Удаляет полностью пустые строки и столбцы,
-    а также приводит названия столбцов к строковому виду.
-    """
-
     df = df.copy()
 
-    df = df.dropna(axis=0, how="all")
-    df = df.dropna(axis=1, how="all")
+    df = df.dropna(
+        axis=0,
+        how="all",
+    )
+
+    df = df.dropna(
+        axis=1,
+        how="all",
+    )
 
     df.columns = [
         str(column).strip()
         for column in df.columns
     ]
 
-    df = df.reset_index(drop=True)
-
-    return df
+    return df.reset_index(drop=True)
 
 
 def dataframe_part_to_json(
     df: pd.DataFrame,
-    start_row: int
+    start_row: int,
 ) -> str:
-    """
-    Преобразует часть DataFrame в компактный JSON.
-
-    Формат:
-    {
-        "columns": [...],
-        "row_start": 1,
-        "row_end": 300,
-        "rows": [...]
-    }
-    """
-
     rows = []
 
-    for row in df.itertuples(index=False, name=None):
+    for row in df.itertuples(
+        index=False,
+        name=None,
+    ):
         rows.append([
             normalize_value(value)
             for value in row
@@ -538,32 +244,24 @@ def dataframe_part_to_json(
         ],
         "row_start": start_row + 1,
         "row_end": start_row + len(df),
-        "rows": rows
+        "rows": rows,
     }
 
     return json.dumps(
         payload,
         ensure_ascii=False,
-        separators=(",", ":")
+        separators=(",", ":"),
     )
 
 
 def split_dataframe_by_size(
     df: pd.DataFrame,
-    max_chars: int = MAX_DATA_CHARS
+    max_chars: int = MAX_DATA_CHARS,
 ) -> list[dict[str, Any]]:
-    """
-    Делит таблицу на части с учетом фактического размера JSON.
-
-    Файлы до 300 строк могут пройти одним блоком.
-    Файл на 5000 строк будет автоматически разделен
-    на необходимое количество частей.
-    """
-
     if df.empty:
         return []
 
-    chunks: list[dict[str, Any]] = []
+    chunks = []
 
     start = 0
     total_rows = len(df)
@@ -571,11 +269,10 @@ def split_dataframe_by_size(
     while start < total_rows:
         low = start + 1
         high = total_rows
+
         best_end = None
         best_json = None
 
-        # Двоичный поиск максимального числа строк,
-        # которые помещаются в установленный размер.
         while low <= high:
             middle = (low + high) // 2
 
@@ -583,7 +280,7 @@ def split_dataframe_by_size(
 
             candidate_json = dataframe_part_to_json(
                 candidate_df,
-                start_row=start
+                start_row=start,
             )
 
             if len(candidate_json) <= max_chars:
@@ -593,23 +290,18 @@ def split_dataframe_by_size(
             else:
                 high = middle - 1
 
-        # Даже одна строка оказалась слишком большой.
         if best_end is None:
             best_end = start + 1
+
             best_json = dataframe_part_to_json(
                 df.iloc[start:best_end],
-                start_row=start
-            )
-
-            print(
-                f"Предупреждение: строка {start + 1} "
-                f"занимает {len(best_json):,} символов."
+                start_row=start,
             )
 
         chunks.append({
             "start_row": start + 1,
             "end_row": best_end,
-            "json": best_json
+            "json": best_json,
         })
 
         start = best_end
@@ -619,13 +311,8 @@ def split_dataframe_by_size(
 
 def split_text_by_size(
     text: str,
-    max_chars: int = MAX_CONSOLIDATION_CHARS
+    max_chars: int = MAX_CONSOLIDATION_CHARS,
 ) -> list[str]:
-    """
-    Делит промежуточные выводы на текстовые блоки.
-    Старается разрывать текст по границам разделов.
-    """
-
     text = text.strip()
 
     if not text:
@@ -635,6 +322,7 @@ def split_text_by_size(
         return [text]
 
     sections = text.split("\n\n")
+
     chunks = []
     current_parts = []
     current_size = 0
@@ -642,21 +330,36 @@ def split_text_by_size(
     for section in sections:
         section_size = len(section) + 2
 
-        if current_parts and current_size + section_size > max_chars:
-            chunks.append("\n\n".join(current_parts))
+        if (
+            current_parts
+            and current_size + section_size > max_chars
+        ):
+            chunks.append(
+                "\n\n".join(current_parts)
+            )
+
             current_parts = []
             current_size = 0
 
-        # Если один раздел сам по себе слишком большой.
         if section_size > max_chars:
             if current_parts:
-                chunks.append("\n\n".join(current_parts))
+                chunks.append(
+                    "\n\n".join(current_parts)
+                )
+
                 current_parts = []
                 current_size = 0
 
-            for position in range(0, len(section), max_chars):
+            for position in range(
+                0,
+                len(section),
+                max_chars,
+            ):
                 chunks.append(
-                    section[position:position + max_chars]
+                    section[
+                        position:
+                        position + max_chars
+                    ]
                 )
 
             continue
@@ -665,588 +368,386 @@ def split_text_by_size(
         current_size += section_size
 
     if current_parts:
-        chunks.append("\n\n".join(current_parts))
+        chunks.append(
+            "\n\n".join(current_parts)
+        )
 
     return chunks
 
 
 # ============================================================
-# 5. ВЫЗОВ МОДЕЛИ
+# ВЫЗОВ МОДЕЛИ С REASONING
 # ============================================================
 
 def ask_model(
     system_prompt: str,
     user_prompt: str,
-    max_tokens: int
+    max_tokens: int,
 ) -> str:
-    """
-    Выполняет запрос к модели и возвращает текст ответа.
-    """
+    current_max_tokens = max_tokens
+    empty_content_attempts = 0
 
-    response = llm_client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user",
-                "content": user_prompt
-            }
-        ],
-        temperature=0.2,
-        max_tokens=max_tokens
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = llm_client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt,
+                    },
+                ],
+                temperature=TEMPERATURE,
+                max_tokens=current_max_tokens,
+                extra_body={
+                    "chat_template_kwargs": {
+                        "enable_thinking": True,
+                    }
+                },
+            )
+
+            message = response.choices[0].message
+
+            content = (
+                message.content.strip()
+                if message.content
+                else ""
+            )
+
+            if content:
+                return content
+
+            empty_content_attempts += 1
+
+            if empty_content_attempts >= 3:
+                raise RuntimeError(
+                    "Модель выполнила reasoning, "
+                    "но не вернула итоговый ответ."
+                )
+
+            current_max_tokens = min(
+                current_max_tokens + 2_000,
+                12_000,
+            )
+
+            time.sleep(10)
+
+        except RateLimitError:
+            if attempt >= MAX_RETRIES:
+                raise
+
+            log(
+                "Достигнут лимит API. "
+                f"Ожидание {RATE_LIMIT_WAIT_SECONDS} секунд."
+            )
+
+            time.sleep(
+                RATE_LIMIT_WAIT_SECONDS
+            )
+
+        except (
+            APIConnectionError,
+            APITimeoutError,
+        ) as error:
+            if attempt >= MAX_RETRIES:
+                raise
+
+            wait_seconds = min(
+                10 * attempt,
+                60,
+            )
+
+            log(
+                f"Ошибка подключения: {error}. "
+                f"Повтор через {wait_seconds} секунд."
+            )
+
+            time.sleep(wait_seconds)
+
+        except APIStatusError as error:
+            if (
+                error.status_code >= 500
+                and attempt < MAX_RETRIES
+            ):
+                wait_seconds = min(
+                    10 * attempt,
+                    60,
+                )
+
+                log(
+                    f"Ошибка Gateway HTTP "
+                    f"{error.status_code}. "
+                    f"Повтор через {wait_seconds} секунд."
+                )
+
+                time.sleep(wait_seconds)
+                continue
+
+            raise
+
+    raise RuntimeError(
+        "Не удалось получить ответ модели."
     )
 
-    content = response.choices[0].message.content
-
-    if not content:
-        raise RuntimeError(
-            "Модель вернула пустой ответ."
-        )
-
-    return content
-
 
 # ============================================================
-# 6. АНАЛИЗ ОДНОЙ ЧАСТИ EXCEL
+# ПРОМЕЖУТОЧНЫЙ АНАЛИЗ ЧАСТИ ДАННЫХ
 # ============================================================
 
-def analyze_chunk(
+def analyze_data_chunk(
     file_name: str,
     chunk_json: str,
     part_number: int,
     total_parts: int,
     start_row: int,
-    end_row: int
+    end_row: int,
 ) -> str:
-    """
-    Анализирует одну часть таблицы.
-    """
+    system_prompt = """
+Ты выполняешь промежуточный анализ агрегированных метрик
+бизнес-процесса.
+
+Используй углубленное reasoning, но возвращай только компактные,
+фактически подтвержденные наблюдения для дальнейшего объединения.
+
+Не формируй отдельный итоговый отчет по файлу.
+Не пересказывай таблицу.
+Не придумывай отсутствующие факты.
+"""
 
     user_prompt = f"""
-{LETTER_DETECTION_PROMPT}
+Все входные Excel-файлы относятся к одному бизнес-процессу.
 
-Название исходного файла:
+Текущий источник данных:
 {file_name}
 
-Передана часть {part_number} из {total_parts}.
+Часть:
+{part_number} из {total_parts}
 
-Диапазон строк исходной таблицы:
-с {start_row} по {end_row} включительно.
+Строки:
+{start_row}–{end_row}
 
-Данные представлены в компактном JSON:
+Итоговая задача анализа:
 
-- поле columns содержит названия столбцов;
-- поле rows содержит значения строк в том же порядке;
-- позиции значений в каждой строке соответствуют positions
-  названий в columns.
+{PROCESS_ANALYSIS_PROMPT}
+
+Проанализируй текущую часть как один из источников общего
+анализа процесса.
+
+Верни компактный промежуточный материал:
+
+1. Значимые наблюдения.
+2. Числовые подтверждения.
+3. Возможные связи с другими типами процессных метрик.
+4. Возможные проблемы и отклонения.
+5. Гипотезы о причинах с явным указанием, что это гипотезы.
+6. Название файла-источника.
+
+Не составляй финальный отчет.
+Не добавляй формальное вступление и заключение.
 
 ДАННЫЕ:
 
 {chunk_json}
-
-Проанализируй только предоставленную часть.
-
-Не утверждай, что выявленные закономерности относятся ко всему
-файлу, если файл состоит из нескольких частей.
 """
 
     return ask_model(
-        system_prompt=(
-            "Ты эксперт по Process Mining, анализу "
-            "бизнес-процессов и операционной эффективности. "
-            "Строго опирайся на переданные данные."
-        ),
+        system_prompt=system_prompt,
         user_prompt=user_prompt,
-        max_tokens=ANALYSIS_MAX_TOKENS
+        max_tokens=ANALYSIS_MAX_TOKENS,
     )
 
 
 # ============================================================
-# 7. КОНСОЛИДАЦИЯ ВЫВОДОВ ПО ОДНОМУ ФАЙЛУ
+# КОНСОЛИДАЦИЯ ВСЕХ МАТЕРИАЛОВ
 # ============================================================
 
-def consolidate_file_results(
-    file_name: str,
-    partial_results: list[str],
-    total_rows: int
+def consolidate_process_materials(
+    intermediate_results: list[str],
 ) -> str:
-    """
-    Формирует единый отчет по одному Excel-файлу.
-
-    Если промежуточные ответы не помещаются в один запрос,
-    используется многоступенчатая консолидация.
-    """
-
-    combined_text = "\n\n".join(
-        f"# Результат анализа части {index}\n\n{result}"
-        for index, result in enumerate(
-            partial_results,
-            start=1
+    current_text = "\n\n".join(
+        (
+            f"===== ПРОМЕЖУТОЧНЫЙ МАТЕРИАЛ {index} =====\n\n"
+            f"{result}"
         )
-    )
-
-    current_blocks = split_text_by_size(
-        combined_text,
-        MAX_CONSOLIDATION_CHARS
+        for index, result in enumerate(
+            intermediate_results,
+            start=1,
+        )
     )
 
     level = 1
 
-    while len(current_blocks) > 1:
-        print(
-            f"  Уровень консолидации {level}: "
-            f"{len(current_blocks)} блоков"
+    while len(current_text) > MAX_CONSOLIDATION_CHARS:
+        blocks = split_text_by_size(
+            current_text,
+            MAX_CONSOLIDATION_CHARS,
+        )
+
+        log(
+            f"Уровень консолидации {level}: "
+            f"{len(blocks)} блоков."
         )
 
         consolidated_blocks = []
 
         for block_number, block in enumerate(
-            current_blocks,
-            start=1
+            blocks,
+            start=1,
         ):
-            consolidation_prompt = f"""
-Ниже представлены промежуточные результаты анализа
-разных частей одного Excel-файла.
+            system_prompt = """
+Ты объединяешь промежуточные результаты Process Mining
+по одному бизнес-процессу.
 
-Название файла:
-{file_name}
+Используй reasoning для перекрестной проверки наблюдений,
+устранения дублей и выявления связей между разными метриками.
 
-Общее количество строк:
-{total_rows}
-
-Текущий блок консолидации:
-{block_number} из {len(current_blocks)}
-
-Задача:
-
-1. Объедини одинаковые и связанные наблюдения.
-2. Удали повторы и противоречивые формулировки.
-3. Сохрани конкретные числовые показатели.
-4. Отдели устойчивые закономерности от единичных случаев.
-5. Не придумывай отсутствующие факты.
-6. Не формируй окончательный отчет, если это только часть
-   промежуточных результатов.
-7. Сохрани ссылки на исходные части или диапазоны строк,
-   когда они указаны.
-
-ПРОМЕЖУТОЧНЫЕ РЕЗУЛЬТАТЫ:
-
-{block}
+Верни только компактный материал для следующего этапа.
+Не формируй пока окончательный отчет пользователю.
 """
 
-            consolidated = ask_model(
-                system_prompt=(
-                    "Ты консолидируешь результаты анализа "
-                    "Process Mining. Сохраняй фактические данные "
-                    "и устраняй дублирование."
-                ),
-                user_prompt=consolidation_prompt,
-                max_tokens=CONSOLIDATION_MAX_TOKENS
-            )
+            user_prompt = f"""
+Основная задача анализа:
 
-            consolidated_blocks.append(consolidated)
+{PROCESS_ANALYSIS_PROMPT}
 
-            time.sleep(REQUEST_DELAY_SECONDS)
+Ниже представлены промежуточные наблюдения,
+полученные из разных Excel-файлов и частей файлов.
 
-        next_text = "\n\n".join(
-            f"# Консолидированный блок {index}\n\n{result}"
-            for index, result in enumerate(
-                consolidated_blocks,
-                start=1
-            )
-        )
+Выполни перекрестную консолидацию:
 
-        current_blocks = split_text_by_size(
-            next_text,
-            MAX_CONSOLIDATION_CHARS
-        )
-
-        level += 1
-
-    consolidated_source = current_blocks[0]
-
-    final_file_prompt = f"""
-Сформируй единый итоговый аналитический отчет
-по Excel-файлу.
-
-Название файла:
-{file_name}
-
-Количество строк после удаления полностью пустых строк:
-{total_rows}
-
-Ниже приведены консолидированные результаты анализа всех
-частей файла.
-
-Требования к итоговому отчету:
-
-1. Начни с краткого управленческого вывода.
-2. Объедини дублирующиеся наблюдения.
-3. Не потеряй важные числовые показатели.
-4. Не придумывай значения и причинно-следственные связи.
-5. Для каждой гипотезы укажи, что это гипотеза.
-6. Приоритизируй проблемы по потенциальному влиянию.
-7. Укажи, какие дополнительные данные нужны для проверки.
-8. Ответ дай на русском языке в Markdown.
-
-Структура:
-
-# Итоговый анализ файла
-
-## Управленческий вывод
-
-## Ключевые инсайты
-
-| № | Инсайт | Подтверждение данными | Возможная причина | Последствия | Приоритет |
-|---|---|---|---|---|---|
-
-## Рекомендации
-
-| № | Рекомендация | Связанный инсайт | Ожидаемый эффект | Приоритет |
-|---|---|---|---|---|
-
-## Три наиболее критичных наблюдения
-
-## Ограничения анализа и необходимые дополнительные данные
-
-КОНСОЛИДИРОВАННЫЕ РЕЗУЛЬТАТЫ:
-
-{consolidated_source}
-"""
-
-    return ask_model(
-        system_prompt=(
-            "Ты ведущий аналитик Process Mining. "
-            "Сформируй непротиворечивый и управленчески "
-            "полезный итоговый отчет."
-        ),
-        user_prompt=final_file_prompt,
-        max_tokens=FINAL_MAX_TOKENS
-    )
-
-
-# ============================================================
-# 8. АНАЛИЗ ОДНОГО EXCEL-ФАЙЛА
-# ============================================================
-
-def analyze_excel_file(
-    file_path: Path
-) -> dict[str, Any]:
-    """
-    Читает первый лист Excel, делит данные на части,
-    анализирует их и формирует отчет по файлу.
-    """
-
-    print("\n" + "=" * 90)
-    print(f"Файл: {file_path.name}")
-
-    # Так как каждый Excel содержит один лист,
-    # читаем первый лист по умолчанию.
-    df = pd.read_excel(
-        file_path,
-        sheet_name=0
-    )
-
-    df = prepare_dataframe(df)
-
-    if df.empty:
-        raise ValueError(
-            f"Файл {file_path.name} не содержит данных."
-        )
-
-    print(f"Строк: {len(df):,}")
-    print(f"Столбцов: {len(df.columns):,}")
-
-    chunks = split_dataframe_by_size(
-        df,
-        max_chars=MAX_DATA_CHARS
-    )
-
-    print(f"Частей для анализа: {len(chunks)}")
-
-    partial_results = []
-
-    for part_number, chunk in enumerate(
-        chunks,
-        start=1
-    ):
-        print(
-            f"  Анализ части {part_number}/{len(chunks)}: "
-            f"строки {chunk['start_row']}–{chunk['end_row']}, "
-            f"{len(chunk['json']):,} символов"
-        )
-
-        try:
-            result = analyze_chunk(
-                file_name=file_path.name,
-                chunk_json=chunk["json"],
-                part_number=part_number,
-                total_parts=len(chunks),
-                start_row=chunk["start_row"],
-                end_row=chunk["end_row"]
-            )
-
-        except Exception as error:
-            print(
-                f"  Ошибка анализа части {part_number}: "
-                f"{type(error).__name__}: {error}"
-            )
-
-            raise
-
-        partial_results.append(result)
-
-        time.sleep(REQUEST_DELAY_SECONDS)
-
-    print("  Консолидация результатов по файлу...")
-
-    consolidated_result = consolidate_file_results(
-        file_name=file_path.name,
-        partial_results=partial_results,
-        total_rows=len(df)
-    )
-
-    # Сохраняем анализ отдельных частей.
-    parts_output_path = (
-        OUTPUT_FOLDER /
-        f"{file_path.stem}_parts_analysis.md"
-    )
-
-    parts_text = "\n\n---\n\n".join(
-        (
-            f"# {file_path.name} — часть {index} "
-            f"из {len(partial_results)}\n\n{result}"
-        )
-        for index, result in enumerate(
-            partial_results,
-            start=1
-        )
-    )
-
-    parts_output_path.write_text(
-        parts_text,
-        encoding="utf-8"
-    )
-
-    # Сохраняем итоговый отчет по файлу.
-    final_output_path = (
-        OUTPUT_FOLDER /
-        f"{file_path.stem}_final_analysis.md"
-    )
-
-    final_output_path.write_text(
-        consolidated_result,
-        encoding="utf-8"
-    )
-
-    print(
-        f"  Итог сохранен: {final_output_path}"
-    )
-
-    return {
-        "file_name": file_path.name,
-        "rows": len(df),
-        "columns": len(df.columns),
-        "parts": len(chunks),
-        "result": consolidated_result
-    }
-
-
-# ============================================================
-# 9. ОБЩАЯ КОНСОЛИДАЦИЯ ПО ВСЕМ ФАЙЛАМ
-# ============================================================
-
-def consolidate_all_files(
-    file_results: list[dict[str, Any]]
-) -> str:
-    """
-    Формирует общий отчет по всем Excel-файлам.
-    """
-
-    combined = "\n\n".join(
-        f"""
-# Файл: {item["file_name"]}
-
-Количество строк: {item["rows"]}
-Количество столбцов: {item["columns"]}
-Количество частей анализа: {item["parts"]}
-
-{item["result"]}
-""".strip()
-        for item in file_results
-    )
-
-    blocks = split_text_by_size(
-        combined,
-        MAX_CONSOLIDATION_CHARS
-    )
-
-    intermediate_results = []
-
-    for block_number, block in enumerate(
-        blocks,
-        start=1
-    ):
-        print(
-            f"Общая консолидация: блок "
-            f"{block_number}/{len(blocks)}"
-        )
-
-        prompt = f"""
-Ниже представлены итоговые отчеты по нескольким Excel-файлам,
-относящимся к анализу бизнес-процесса.
+1. Объедини одинаковые и связанные выводы.
+2. Удали дубли.
+3. Сохрани важные числовые показатели.
+4. Сохрани названия файлов-источников.
+5. Найди связи между временем, сценариями, этапами,
+   переходами и общими метриками.
+6. Отдели устойчивые закономерности от единичных случаев.
+7. Явно обозначь противоречия между источниками.
+8. Не придумывай отсутствующие факты.
+9. Не формируй отдельные разделы по каждому файлу.
 
 Текущий блок:
 {block_number} из {len(blocks)}
 
-Задача:
-
-1. Выяви сквозные закономерности между файлами.
-2. Сопоставь взаимосвязанные показатели.
-3. Объедини повторяющиеся выводы.
-4. Отметь противоречия между наборами метрик.
-5. Сохрани названия файлов — источников выводов.
-6. Не придумывай факты и числовые показатели.
-
-ОТЧЕТЫ ПО ФАЙЛАМ:
+МАТЕРИАЛЫ:
 
 {block}
 """
 
-        result = ask_model(
-            system_prompt=(
-                "Ты консолидируешь результаты анализа "
-                "нескольких наборов метрик Process Mining."
-            ),
-            user_prompt=prompt,
-            max_tokens=CONSOLIDATION_MAX_TOKENS
+            result = ask_model(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=CONSOLIDATION_MAX_TOKENS,
+            )
+
+            consolidated_blocks.append(result)
+
+            time.sleep(
+                REQUEST_DELAY_SECONDS
+            )
+
+        current_text = "\n\n".join(
+            (
+                f"===== КОНСОЛИДИРОВАННЫЙ БЛОК {index} =====\n\n"
+                f"{result}"
+            )
+            for index, result in enumerate(
+                consolidated_blocks,
+                start=1,
+            )
         )
 
-        intermediate_results.append(result)
+        level += 1
 
-        time.sleep(REQUEST_DELAY_SECONDS)
+    return current_text
 
-    combined_intermediate = "\n\n".join(
-        f"# Блок {index}\n\n{result}"
-        for index, result in enumerate(
-            intermediate_results,
-            start=1
+
+# ============================================================
+# ЕДИНЫЙ ИТОГОВЫЙ ОТЧЕТ
+# ============================================================
+
+def create_final_process_report(
+    consolidated_material: str,
+    files_info: list[dict[str, Any]],
+) -> str:
+    sources_description = "\n".join(
+        (
+            f"- {item['file_name']}: "
+            f"{item['rows']} строк, "
+            f"{item['columns']} столбцов"
         )
+        for item in files_info
     )
 
-    # На случай, если даже результаты общей консолидации
-    # не помещаются в один финальный запрос.
-    while len(combined_intermediate) > MAX_CONSOLIDATION_CHARS:
-        next_blocks = split_text_by_size(
-            combined_intermediate,
-            MAX_CONSOLIDATION_CHARS
-        )
+    system_prompt = """
+Ты ведущий эксперт по Process Mining.
 
-        next_results = []
+Используй reasoning для комплексного анализа взаимосвязей
+между всеми процессными метриками.
 
-        for index, block in enumerate(
-            next_blocks,
-            start=1
-        ):
-            prompt = f"""
-Сократи и объедини данный блок результатов анализа.
-
-Удали дубли, сохрани числовые показатели, названия файлов,
-ключевые проблемы, риски и рекомендации.
-
-Не придумывай новые факты.
-
-БЛОК:
-
-{block}
+Верни только единый итоговый отчет по бизнес-процессу.
+Не раскрывай внутренний ход рассуждений.
+Не описывай техническую обработку файлов.
+Не формируй отдельные отчеты по файлам.
 """
 
-            next_result = ask_model(
-                system_prompt=(
-                    "Ты выполняешь промежуточную консолидацию "
-                    "аналитических выводов."
-                ),
-                user_prompt=prompt,
-                max_tokens=CONSOLIDATION_MAX_TOKENS
-            )
+    user_prompt = f"""
+Сформируй единый консолидированный анализ бизнес-процесса.
 
-            next_results.append(next_result)
+Основная задача и требуемый формат:
 
-            time.sleep(REQUEST_DELAY_SECONDS)
+{PROCESS_ANALYSIS_PROMPT}
 
-        combined_intermediate = "\n\n".join(
-            f"# Укрупненный блок {index}\n\n{result}"
-            for index, result in enumerate(
-                next_results,
-                start=1
-            )
-        )
+Использованные источники:
 
-    final_prompt = f"""
-На основании итоговых отчетов по всем Excel-файлам сформируй
-единый управленческий отчет по процессу.
+{sources_description}
 
-Требования:
+Ниже приведен объединенный аналитический материал,
+полученный из всех входных Excel-файлов.
 
-1. Не рассматривай файлы изолированно — найди связи между ними.
-2. Сформулируй основные сквозные проблемы процесса.
-3. Сохрани конкретные числовые показатели и источники.
-4. Отдели подтвержденные выводы от гипотез.
-5. Удали дублирующиеся рекомендации.
-6. Приоритизируй действия.
-7. Не придумывай отсутствующие факты.
-8. Ответ дай на русском языке в Markdown.
+Обязательные требования:
 
-Структура:
+1. Рассматривай все файлы как взаимосвязанные источники
+   по одному процессу.
+2. Не структурируй результат по названиям файлов.
+3. Не выводи промежуточные результаты.
+4. Не упоминай разбиение данных на части.
+5. Удали дублирующиеся выводы.
+6. Каждый значимый вывод подкрепляй метриками.
+7. Отделяй факты от гипотез.
+8. Не придумывай причины и показатели.
+9. Верни только итоговый отчет в формате,
+   установленном основным промптом.
 
-# Сводный анализ процесса
+КОНСОЛИДИРОВАННЫЙ МАТЕРИАЛ:
 
-## Управленческое резюме
-
-## Сквозные закономерности и узкие места
-
-| № | Вывод | Подтверждение | Файлы-источники | Последствия | Приоритет |
-|---|---|---|---|---|---|
-
-## Противоречия и ограничения данных
-
-## Приоритетный план действий
-
-| № | Действие | Основание | Ожидаемый эффект | Приоритет |
-|---|---|---|---|---|
-
-## Топ-5 наиболее значимых выводов
-
-## Дополнительные данные, необходимые для проверки выводов
-
-КОНСОЛИДИРОВАННЫЕ МАТЕРИАЛЫ:
-
-{combined_intermediate}
+{consolidated_material}
 """
 
     return ask_model(
-        system_prompt=(
-            "Ты ведущий эксперт по Process Mining. "
-            "Подготовь точный сводный отчет для руководства."
-        ),
-        user_prompt=final_prompt,
-        max_tokens=FINAL_MAX_TOKENS
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        max_tokens=FINAL_MAX_TOKENS,
     )
 
 
 # ============================================================
-# 10. ЗАПУСК
+# ЗАПУСК
 # ============================================================
 
 if not INPUT_FOLDER.exists():
-    INPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+    INPUT_FOLDER.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     raise FileNotFoundError(
-        f"Папка создана: {INPUT_FOLDER.resolve()}\n"
-        "Помести в нее Excel-файлы и запусти ячейку повторно."
+        f"Создана папка {INPUT_FOLDER.resolve()}. "
+        "Помести в нее Excel-файлы и запусти код повторно."
     )
 
 
@@ -1260,86 +761,107 @@ xlsx_files = sorted(
 if not xlsx_files:
     raise FileNotFoundError(
         f"В папке {INPUT_FOLDER.resolve()} "
-        "не найдено файлов .xlsx."
+        "не найдено файлов XLSX."
     )
 
 
-print(f"Найдено Excel-файлов: {len(xlsx_files)}")
-
-all_file_results = []
+intermediate_results = []
+files_info = []
 
 
 for file_number, file_path in enumerate(
     xlsx_files,
-    start=1
+    start=1,
 ):
-    print(
-        f"\nОбработка файла "
-        f"{file_number}/{len(xlsx_files)}"
+    log(
+        f"Обработка файла "
+        f"{file_number}/{len(xlsx_files)}: "
+        f"{file_path.name}"
     )
 
-    try:
-        file_result = analyze_excel_file(
-            file_path
-        )
+    df = pd.read_excel(
+        file_path,
+        sheet_name=0,
+    )
 
-        all_file_results.append(
-            file_result
-        )
+    df = prepare_dataframe(df)
 
-        display(
-            Markdown(
-                f"# {file_path.name}\n\n"
-                f"{file_result['result']}"
-            )
+    if df.empty:
+        log(
+            f"Файл {file_path.name} пустой и пропущен."
         )
-
-    except Exception as error:
-        print(
-            f"Ошибка обработки файла {file_path.name}: "
-            f"{type(error).__name__}: {error}"
-        )
-
-        # При ошибке переходим к следующему файлу.
-        # Если нужно останавливать весь код, замени continue на raise.
         continue
 
+    chunks = split_dataframe_by_size(
+        df,
+        max_chars=MAX_DATA_CHARS,
+    )
 
-if not all_file_results:
+    files_info.append({
+        "file_name": file_path.name,
+        "rows": len(df),
+        "columns": len(df.columns),
+        "parts": len(chunks),
+    })
+
+    for part_number, chunk in enumerate(
+        chunks,
+        start=1,
+    ):
+        log(
+            f"  Часть {part_number}/{len(chunks)}"
+        )
+
+        result = analyze_data_chunk(
+            file_name=file_path.name,
+            chunk_json=chunk["json"],
+            part_number=part_number,
+            total_parts=len(chunks),
+            start_row=chunk["start_row"],
+            end_row=chunk["end_row"],
+        )
+
+        intermediate_results.append(result)
+
+        time.sleep(
+            REQUEST_DELAY_SECONDS
+        )
+
+
+if not intermediate_results:
     raise RuntimeError(
-        "Не удалось успешно проанализировать ни одного файла."
+        "Не удалось получить материалы "
+        "для итогового анализа."
     )
 
 
-print("\n" + "=" * 90)
-print("Формирование сводного отчета по всем файлам...")
-
-
-final_report = consolidate_all_files(
-    all_file_results
+consolidated_material = consolidate_process_materials(
+    intermediate_results
 )
 
 
-final_report_path = (
-    OUTPUT_FOLDER /
-    "all_files_consolidated_analysis.md"
+final_report = create_final_process_report(
+    consolidated_material=consolidated_material,
+    files_info=files_info,
 )
 
 
-final_report_path.write_text(
+output_path = (
+    OUTPUT_FOLDER
+    / "process_consolidated_analysis.md"
+)
+
+
+output_path.write_text(
     final_report,
-    encoding="utf-8"
+    encoding="utf-8",
 )
 
 
-display(
-    Markdown(
-        "# Сводный отчет по всем файлам\n\n"
-        + final_report
-    )
+# Выводится только один итоговый отчет
+display(Markdown(final_report))
+
+print(
+    f"\nИтоговый отчет сохранен: "
+    f"{output_path.resolve()}"
 )
-
-
-print("\nГотово.")
-print(f"Результаты находятся в: {OUTPUT_FOLDER.resolve()}")
-print(f"Сводный отчет: {final_report_path.resolve()}")
