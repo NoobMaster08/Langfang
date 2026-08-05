@@ -1,0 +1,25 @@
+MODEL_NAME = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
+
+llm_client = OpenAI(
+    base_url="https://raisa.go.rshbank.ru/ai/models/moe-llm/v1",
+    api_key="ТВОЙ_КЛЮЧ",
+    http_client=httpx.Client(verify=False)
+)
+
+response = llm_client.chat.completions.create(
+    model=MODEL_NAME,
+    messages=[
+        {
+            "role": "user",
+            "content": "Ответь одним словом: работает"
+        }
+    ],
+    max_tokens=500,
+    extra_body={
+        "chat_template_kwargs": {
+            "enable_thinking": True
+        }
+    }
+)
+
+print(response.choices[0].message.content)
