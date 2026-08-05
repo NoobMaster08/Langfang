@@ -1,39 +1,65 @@
 import httpx
 
-BASE_URL = "https://raisa.go.rshbank.ru/ai/models/moe-llm/v1"
-API_KEY = "123"
+HOST = "https://raisa.go.rshbank.ru"
+API_KEY = "ТВОЙ_КЛЮЧ"
+
+paths = [
+    "/ai/models/moe-llm/v1/models",
+    "/ai/models/moe-llm/v1/chat/completions",
+    "/ai/models/moe-llm/chat/completions",
+    "/ai/models/moe-llm/openai/v1/chat/completions",
+    "/ai/models/moe-llm/v1/completions",
+    "/ai/models/moe-llm/health",
+    "/ai/models/moe-llm/docs",
+    "/ai/models/moe-llm/openapi.json",
+]
 
 headers = {
     "Authorization": f"Bearer {API_KEY}",
     "Content-Type": "application/json",
 }
 
-with httpx.Client(verify=False, timeout=60) as client:
+chat_payload = {
+    "model": "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit",
+    "messages": [
+        {
+            "role": "user",
+            "content": "Ответь одним словом: работает",
+        }
+    ],
+    "max_tokens": 100,
+}
 
-    models_response = client.get(
-        f"{BASE_URL}/models",
-        headers=headers,
-    )
+with httpx.Client(
+    verify=False,
+    timeout=60,
+    follow_redirects=True,
+) as client:
 
-    print("MODELS:")
-    print(models_response.status_code)
-    print(models_response.text)
+    for path in paths:
+        url = HOST + path
 
-    chat_response = client.post(
-        f"{BASE_URL}/chat/completions",
-        headers=headers,
-        json={
-            "model": "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "Ответь одним словом: работает",
-                }
-            ],
-            "max_tokens": 500,
-        },
-    )
+        try:
+            if path.endswith(
+                ("/chat/completions", "/completions")
+            ):
+                response = client.post(
+                    url,
+                    headers=headers,
+                    json=chat_payload,
+                )
+            else:
+                response = client.get(
+                    url,
+                    headers=headers,
+                )
 
-    print("\nCHAT:")
-    print(chat_response.status_code)
-    print(chat_response.text)
+            print("=" * 90)
+            print("URL:", url)
+            print("STATUS:", response.status_code)
+            print("FINAL URL:", response.url)
+            print("SERVER:", response.headers.get("server"))
+            print("BODY:", response.text[:500])
+
+        except Exception as error:
+            print(url, "->", type(error).__name__, error)
