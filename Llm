@@ -144,19 +144,7 @@ SHOW_PROGRESS = False
 # ПОДКЛЮЧЕНИЕ К AI GATEWAY
 # ============================================================
 
-llm_client = OpenAI(
-    base_url="https://ai-gateway.raisa.go.rshbank.ru/ai/models/moe-llm/v1",
-    api_key="123",  # укажи актуальный ключ
-    http_client=httpx.Client(
-        verify=False,
-        timeout=httpx.Timeout(
-            connect=60.0,
-            read=600.0,
-            write=600.0,
-            pool=60.0,
-        ),
-    ),
-)
+
 
 
 # ============================================================
