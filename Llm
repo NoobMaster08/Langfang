@@ -1,61 +1,61 @@
+import json
 import pandas as pd
-from IPython.display import display
+from openai import OpenAI
 
-FILE = "Приложение 2.xlsx"
-SHEET = 0
+FILE = "input.xlsx"
+MODEL = "ваша_модель"
 
-# Первые 2 строки пропускаются,
-# строки 3 и 4 Excel становятся двухуровневой шапкой
-df = pd.read_excel(
-    FILE,
-    sheet_name=SHEET,
-    header=[2, 3]
+client = OpenAI(
+    api_key="ВАШ_API_KEY",
+    base_url="ВАШ_BASE_URL"
 )
 
-# Убираем надписи Unnamed из заголовков
-df.columns = pd.MultiIndex.from_tuples([
-    (
-        "" if str(a).startswith("Unnamed:") else str(a),
-        "" if str(b).startswith("Unnamed:") else str(b)
-    )
-    for a, b in df.columns
-])
+# Читаем Excel как есть, включая пустые строки/столбцы
+df = pd.read_excel(FILE, header=None)
 
-# Не ограничиваем количество строк/столбцов
-pd.set_option("display.max_rows", None)
-pd.set_option("display.max_columns", None)
-pd.set_option("display.max_colwidth", None)
-pd.set_option("display.width", None)
-
-# Красивый вывод
-styled = (
-    df.style
-    .set_properties(**{
-        "text-align": "center",
-        "vertical-align": "middle",
-        "white-space": "normal",
-        "border": "1px solid #999",
-        "padding": "5px"
-    })
-    .set_table_styles([
-        {
-            "selector": "th",
-            "props": [
-                ("text-align", "center"),
-                ("vertical-align", "middle"),
-                ("white-space", "normal"),
-                ("border", "1px solid #777"),
-                ("padding", "6px"),
-                ("font-weight", "bold")
-            ]
-        },
-        {
-            "selector": "table",
-            "props": [
-                ("border-collapse", "collapse")
-            ]
-        }
-    ])
+# Превращаем таблицу в текст
+excel_text = df.fillna("").astype(str).to_csv(
+    index=False,
+    header=False,
+    sep="|"
 )
 
-display(styled)
+prompt = f"""
+Ниже содержимое Excel-файла с маппингом полей.
+
+Твоя задача:
+1. Найти названия полей на русском языке.
+2. Определить соответствующие им названия полей на английском языке.
+3. Вернуть ТОЛЬКО валидный JSON.
+4. Ключ JSON — английское название поля.
+5. Значение JSON — соответствующее русское название поля.
+6. Не добавляй пояснения, markdown и ```json.
+7. Не придумывай соответствия. Если связь между русским и английским
+   названием нельзя однозначно определить — не включай такое поле в JSON.
+8. Сохраняй английские названия точно так, как они записаны в Excel.
+
+Пример результата:
+{{
+  "DepartmentCode": "Код подразделения",
+  "LoanAgreementDate": "Дата заключения кредитного договора",
+  "BorrowerName": "Наименование заемщика"
+}}
+
+Содержимое Excel:
+
+{excel_text}
+"""
+
+response = client.chat.completions.create(
+    model=MODEL,
+    messages=[
+        {"role": "user", "content": prompt}
+    ],
+    temperature=0
+)
+
+result = response.choices[0].message.content
+
+data = json.loads(result)
+
+data
